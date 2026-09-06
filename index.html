@@ -685,6 +685,65 @@ const normalizeData = p => {
     if (!base.quarters[qk].rockStatus) base.quarters[qk].rockStatus = {};
   });
 
+  // Area de-duplication migration (one-shot). Fixes cases where yearRocks are
+  // stored under two different areaKeys that share the same visible label
+  // (e.g. legacy `SelfM` vs. current `selfm`, or duplicated areasList entries).
+  // Strategy:
+  //   1. Dedupe vision.areasList by label (case-insensitive), keeping the first.
+  //   2. For every areaKey found in yearRocks that isn't in areasList, try to
+  //      merge it into the areasList entry with the same normalized label
+  //      (label match against the ORPHAN key, or fallback: exact key match
+  //      case-insensitive). Move its rocks into the canonical area's bucket.
+  const normLbl = s => (s || '').toString().trim().toLowerCase().replace(/^\d+\.\s*/, '');
+  if (base.vision && Array.isArray(base.vision.areasList)) {
+    const seenLbl = {};
+    const rekey = {}; // oldKey -> newKey (for moving yearRocks)
+    const dedupedList = [];
+    base.vision.areasList.forEach(a => {
+      const key = normLbl(a.label);
+      if (seenLbl[key]) {
+        rekey[a.k] = seenLbl[key];
+      } else {
+        seenLbl[key] = a.k;
+        dedupedList.push(a);
+      }
+    });
+    base.vision.areasList = dedupedList;
+    // Move rocks from removed area buckets to their canonical target
+    Object.keys(base.yearRocks || {}).forEach(y => {
+      const yr = base.yearRocks[y];
+      Object.keys(yr).forEach(ak => {
+        if (rekey[ak]) {
+          const target = rekey[ak];
+          if (!yr[target]) yr[target] = [];
+          yr[target] = yr[target].concat(yr[ak] || []);
+          delete yr[ak];
+        }
+      });
+    });
+  }
+  // Now handle orphan areaKeys in yearRocks (not in areasList): merge into the
+  // areasList entry whose label matches (normalized). If no match, leave as-is.
+  if (base.vision && Array.isArray(base.vision.areasList)) {
+    const labelToKey = {};
+    base.vision.areasList.forEach(a => { labelToKey[normLbl(a.label)] = a.k; });
+    // Also index by the key itself (case-insensitive) as a fallback
+    const keyLower = {};
+    base.vision.areasList.forEach(a => { keyLower[a.k.toLowerCase()] = a.k; });
+    Object.keys(base.yearRocks || {}).forEach(y => {
+      const yr = base.yearRocks[y];
+      Object.keys(yr).forEach(ak => {
+        if (base.vision.areasList.some(a => a.k === ak)) return;
+        const target = labelToKey[normLbl(ak)] || keyLower[ak.toLowerCase()];
+        if (target && target !== ak) {
+          if (!yr[target]) yr[target] = [];
+          yr[target] = yr[target].concat(yr[ak] || []);
+          delete yr[ak];
+        }
+      });
+    });
+  }
+
   // IDS session scoping migration: tag every existing issue with a sessionKey
   // ('w'+weekNum for L10 origin, 'qreview' for Q Review origin). Legacy issues
   // have no sessionKey — infer from weekAdded/weekNum. Since we can't reliably
@@ -6092,15 +6151,19 @@ function PrintView({data, onBack}) {
       {(() => {
         const yrFlat = getYearRocksFlat(data);
         if (yrFlat.length === 0) return null;
-        // Group flat list by area, preserving order
+        // Group flat list by NORMALIZED label (case+numeric-prefix-insensitive),
+        // preserving order. Defends against any residual duplicate areaKeys
+        // whose migration hasn't collapsed them.
+        const nk = s => (s || '').toString().trim().toLowerCase().replace(/^\d+\.\s*/, '');
         const groups = [];
         const seen = {};
         yrFlat.forEach(x => {
-          if (!seen[x.areaKey]) {
-            seen[x.areaKey] = groups.length;
+          const key = nk(x.areaLabel);
+          if (!seen[key]) {
+            seen[key] = groups.length;
             groups.push({areaLabel: x.areaLabel, areaKey: x.areaKey, items: []});
           }
-          groups[seen[x.areaKey]].items.push(x);
+          groups[seen[key]].items.push(x);
         });
         return (
           <section id="sec-year-rocks" className="print-page-break">
