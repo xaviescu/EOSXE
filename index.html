@@ -502,6 +502,17 @@ const metricIsScore = m => m && m.type === 'score';
 // Weekly count of 'ok' ticks for tick metrics.
 const weekTickCnt = (m, wn) => DAYS.reduce((acc, _, di) =>
   (m.dayData && m.dayData[dayStr(wn, di)] === 'ok' ? acc + 1 : acc), 0);
+// True if the week has any 'nok' (X) mark and zero 'ok' marks — i.e. the user
+// explicitly recorded misses. Used to distinguish "no data" (·) from "recorded zero".
+const weekAllX = (m, wn) => {
+  let hasNok = false;
+  for (let di = 0; di < DAYS.length; di++) {
+    const st = m.dayData && m.dayData[dayStr(wn, di)];
+    if (st === 'ok') return false;
+    if (st === 'nok') hasNok = true;
+  }
+  return hasNok;
+};
 // Weekly average of numeric scores. Returns null if no entries.
 const weekScoreAvg = (m, wn) => {
   const vals = DAYS.map((_, di) => m.dayData && m.dayData[dayStr(wn, di)])
@@ -4011,7 +4022,7 @@ function ScorecardSummary({scorecard, qw, selWn, onSelectWn, renderMetricExtra, 
                     const hasGoal = !isNaN(goal) && goal > 0;
                     const done = hasGoal && cnt >= goal;
                     col = done ? 'var(--brand)' : 'var(--muted-soft)';
-                    content = cnt > 0 ? cnt : '·';
+                    content = cnt > 0 ? cnt : (weekAllX(m, wn) ? 0 : '·');
                   }
                   return (
                     <td key={wn} onClick={() => onSelectWn && onSelectWn(wn)}
